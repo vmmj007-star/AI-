@@ -1,3 +1,4 @@
 # AI-
 AI 디지털 학습자료 정리
-##뉴스 클로드 MAX 무료 6개월이용권 https://claude.com/contact-sales/claude-for-oss
+##뉴스 클로드 MAX 무료 6개월이용권 신청링크 공유https://claude.com/contact-sales/claude-for-oss
+신청서는 순차적으로 검토됩니다. 최대 10,000명의 기여자를 받습니다. 승인되면 구독 기간 동안 계정에서 클로드 맥스를 활성화할 수 있는 링크를 받게 됩니다.

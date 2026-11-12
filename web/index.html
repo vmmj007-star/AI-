@@ -30,6 +30,13 @@ td input{width:60px}
 .col .fr.v{outline:2px solid var(--fault);outline-offset:-2px}
 .col .fr.new{font-weight:700;color:var(--accent)}
 .hidden{opacity:0;width:0!important;padding:0;border:0;overflow:hidden}
+.sync-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:700px){.sync-grid{grid-template-columns:1fr}}
+textarea{font:13px/1.5 ui-monospace,monospace;width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.tr td,.tr th{text-align:left}.tr tr.blk-row td{color:var(--fault)}
+.pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:.8rem;color:#fff}
+.ok{background:var(--hit)}.bad{background:var(--fault)}
+.msg{margin:8px 0;font-weight:600}
 .legend{font-size:.8rem;margin-top:8px}
 </style>
 </head>
@@ -59,6 +66,39 @@ td input{width:60px}
 <div class="mem" id="mem"></div>
 <div class="legend"><b style="color:var(--hit)">■ 히트</b> <b style="color:var(--fault)">■ 폴트</b> (빨간 테두리 = 교체된 페이지)</div>
 <div class="stats" id="mstats"></div>
+</section>
+
+<section>
+<h2>동기화: 세마포어 &amp; 데드락</h2>
+<label>예제<select id="spreset"><option value="deadlock">데드락 (락 순서 반대)</option><option value="ordered">해결 (락 순서 통일)</option><option value="mutex">뮤텍스 (상호배제)</option></select></label>
+<button id="runsem">실행</button>
+<textarea id="sscript" rows="4" spellcheck="false"></textarea>
+<div class="msg" id="smsg"></div>
+<div style="overflow-x:auto"><table class="tr" id="strace"></table></div>
+</section>
+
+<section>
+<h2>은행원 알고리즘 (교착상태 회피)</h2>
+<div class="sync-grid">
+<label>가용(Available)<textarea id="bav" rows="1">3 3 2</textarea></label>
+<span></span>
+<label>최대 요구(Max) — 프로세스당 한 줄<textarea id="bmx" rows="5">7 5 3
+3 2 2
+9 0 2
+2 2 2
+4 3 3</textarea></label>
+<label>현재 할당(Allocation)<textarea id="bal" rows="5">0 1 0
+2 0 0
+3 0 2
+2 1 1
+0 0 2</textarea></label>
+</div>
+<button id="bsafe">안전성 검사</button>
+<label style="margin-left:12px">요청 프로세스 번호<input id="bpid" type="number" min="0" value="1" style="width:70px"></label>
+<label>요청량<input id="breq" value="1 0 2" style="width:100px"></label>
+<button id="breqgo" class="sec">요청 시도</button>
+<div class="msg" id="bmsg"></div>
+<div id="bseq" class="mem"></div>
 </section>
 </main>
 <script>
@@ -190,7 +230,100 @@ $("cmp").onclick=()=>{
   $("mstats").innerHTML="<table><thead><tr><th>알고리즘</th><th>폴트</th><th>폴트율</th></tr></thead><tbody>"+
     ["fifo","lru","opt"].map(a=>{const f=simulate(refs,frames,a).faults;return `<tr><td>${a.toUpperCase()}</td><td>${f}/${refs.length}</td><td>${(f/refs.length*100).toFixed(0)}%</td></tr>`;}).join("")+"</tbody></table>";
 };
-if(typeof module!=="undefined")module.exports={schedule,simulate};
+
+/* ---------- 동기화 (pyos/sync.py 와 동일 로직) ---------- */
+const PRESETS={
+  deadlock:"sem a=1 b=1\nP1: P a; P b; work; V b; V a\nP2: P b; P a; work; V a; V b",
+  ordered:"sem a=1 b=1\nP1: P a; P b; work; V b; V a\nP2: P a; P b; work; V b; V a",
+  mutex:"sem m=1\nP1: P m; work; work; V m\nP2: P m; work; V m\nP3: P m; work; V m"};
+function parseScript(text){
+  const sems={},procs={};
+  text.split("\n").map(l=>l.trim()).filter(Boolean).forEach(line=>{
+    if(line.startsWith("sem ")){line.slice(4).split(/\s+/).forEach(t=>{const [k,v]=t.split("=");sems[k]=v===undefined?1:+v;});}
+    else{const i=line.indexOf(":");procs[line.slice(0,i).trim()]=line.slice(i+1).split(";").map(o=>o.trim()).filter(Boolean);}
+  });
+  for(const ops of Object.values(procs))for(const op of ops){
+    const [k,a]=op.split(/\s+/);
+    if(!["P","V","work"].includes(k)||(k!=="work"&&!(a in sems)))throw new Error("잘못된 연산: "+op);}
+  return {sems,procs};
+}
+function runSemaphores(sems0,procs,maxSteps=500){
+  const sems={...sems0},pc={},waiters={},blocked={},trace=[],order=Object.keys(procs);
+  order.forEach(p=>pc[p]=0);Object.keys(sems).forEach(s=>waiters[s]=[]);
+  let i=0;
+  for(let step=1;step<=maxSteps;step++){
+    const runnable=order.filter(p=>pc[p]<procs[p].length&&!(p in blocked));
+    if(!runnable.length){const stuck=order.filter(p=>p in blocked);return {trace,result:stuck.length?"deadlock":"done",stuck};}
+    let p;for(let k=0;k<order.length;k++){const c=order[(i+k)%order.length];if(runnable.includes(c)){p=c;break;}}
+    i=(order.indexOf(p)+1)%order.length;
+    const op=procs[p][pc[p]],[kind,s]=op.split(/\s+/);let note="작업 수행";
+    if(kind==="P"){
+      if(sems[s]>0){sems[s]--;pc[p]++;note=`${s} 획득`;}
+      else{waiters[s].push(p);blocked[p]=s;note=`${s} 대기 → 블록`;}
+    }else if(kind==="V"){
+      pc[p]++;
+      if(waiters[s].length){const w=waiters[s].shift();delete blocked[w];pc[w]++;note=`${s} 반납 → ${w} 깨움(획득)`;}
+      else{sems[s]++;note=`${s} 반납`;}
+    }else pc[p]++;
+    trace.push({step,proc:p,op,note,sems:{...sems},blocked:{...blocked}});
+  }
+  return {trace,result:"timeout",stuck:[]};
+}
+function reduceProcs(work,alloc,need){
+  work=[...work];const left=alloc.map((_,i)=>i),seq=[];let progress=true;
+  while(progress){progress=false;
+    for(const i of [...left]){
+      if(need[i].every((n,k)=>n<=work[k])){work=work.map((w,k)=>w+alloc[i][k]);left.splice(left.indexOf(i),1);seq.push(i);progress=true;}}}
+  return {seq,left};
+}
+const needOf=(mx,al)=>mx.map((r,i)=>r.map((m,k)=>m-al[i][k]));
+function safeSequence(av,mx,al){const {seq,left}=reduceProcs(av,al,needOf(mx,al));return left.length?null:seq;}
+function requestResources(pid,req,av,mx,al){
+  const need=mx[pid].map((m,k)=>m-al[pid][k]);
+  if(req.some((r,k)=>r>need[k]))return {ok:false,why:"최대 선언량 초과",av,al};
+  if(req.some((r,k)=>r>av[k]))return {ok:false,why:"가용 자원 부족 (대기)",av,al};
+  const nav=av.map((a,k)=>a-req[k]),nal=al.map(r=>[...r]);nal[pid]=nal[pid].map((a,k)=>a+req[k]);
+  if(!safeSequence(nav,mx,nal))return {ok:false,why:"승인 시 불안전 상태 → 거부",av,al};
+  return {ok:true,why:"안전 상태 유지 → 승인",av:nav,al:nal};
+}
+
+/* ---------- UI: 동기화 ---------- */
+const esc=t=>String(t).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+$("spreset").onchange=()=>{$("sscript").value=PRESETS[$("spreset").value];};
+$("sscript").value=PRESETS.deadlock;
+$("runsem").onclick=()=>{
+  const msg=$("smsg"),tb=$("strace");tb.innerHTML="";
+  let r,names;
+  try{const {sems,procs}=parseScript($("sscript").value);r=runSemaphores(sems,procs);names=Object.keys(procs);r.sems=Object.keys(sems);}
+  catch(e){msg.innerHTML=`<span class="pill bad">오류</span> ${esc(e.message)}`;return;}
+  msg.innerHTML=r.result==="done"?'<span class="pill ok">정상 종료</span> 모든 프로세스가 끝났습니다.':
+    r.result==="deadlock"?`<span class="pill bad">데드락</span> 막힌 프로세스: ${r.stuck.map(p=>`${esc(p)}(${esc(r.trace[r.trace.length-1].blocked[p])} 대기)`).join(", ")}`:
+    '<span class="pill bad">중단</span> 최대 단계 초과';
+  tb.innerHTML="<thead><tr><th>#</th><th>프로세스</th><th>연산</th><th>결과</th>"+r.sems.map(s=>`<th>${esc(s)}</th>`).join("")+"</tr></thead><tbody>"+
+    r.trace.map(t=>`<tr class="${t.note.includes("블록")?"blk-row":""}"><td>${t.step}</td><td>${esc(t.proc)}</td><td>${esc(t.op)}</td><td>${esc(t.note)}</td>`+
+      r.sems.map(s=>`<td>${t.sems[s]}</td>`).join("")+"</tr>").join("")+"</tbody>";
+};
+/* ---------- UI: 은행원 ---------- */
+const nums=t=>t.trim().split(/[\s,]+/).filter(Boolean).map(Number);
+const rows=t=>t.trim().split("\n").map(nums).filter(r=>r.length);
+function readBank(){return {av:nums($("bav").value),mx:rows($("bmx").value),al:rows($("bal").value)};}
+function showSeq(seq){
+  $("bseq").innerHTML=seq?seq.map((p,i)=>`<div class="col"><div class="ref h">P${p}</div><div class="fr">${i+1}번째</div></div>`).join(""):"";
+}
+$("bsafe").onclick=()=>{
+  const b=readBank(),seq=safeSequence(b.av,b.mx,b.al);
+  $("bmsg").innerHTML=seq?`<span class="pill ok">안전</span> 안전 순서: ${seq.map(p=>"P"+p).join(" → ")}`:'<span class="pill bad">불안전</span> 모든 프로세스가 끝날 수 있는 순서가 없습니다.';
+  showSeq(seq);
+};
+$("breqgo").onclick=()=>{
+  const b=readBank(),pid=+$("bpid").value;
+  if(!(pid>=0&&pid<b.al.length)){$("bmsg").innerHTML='<span class="pill bad">오류</span> 프로세스 번호가 범위를 벗어났습니다.';return;}
+  const r=requestResources(pid,nums($("breq").value),b.av,b.mx,b.al);
+  if(r.ok){$("bav").value=r.av.join(" ");$("bal").value=r.al.map(x=>x.join(" ")).join("\n");}
+  $("bmsg").innerHTML=`<span class="pill ${r.ok?"ok":"bad"}">${r.ok?"승인":"거부"}</span> P${pid} 요청 [${nums($("breq").value)}]: ${r.why}`+(r.ok?" (할당·가용 상태 갱신됨)":"");
+  const seq=safeSequence(...(()=>{const c=readBank();return [c.av,c.mx,c.al];})());showSeq(seq);
+};
+if(typeof module!=="undefined")module.exports={schedule,simulate,parseScript,runSemaphores,safeSequence,requestResources};
 </script>
 </body>
 </html>

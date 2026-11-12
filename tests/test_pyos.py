@@ -57,3 +57,42 @@ def test_shell():
     assert "평균 대기시간" in sh.run("sched fcfs")
     assert "폴트" in sh.run("vmem lru 3 1 2 3 4")
     assert sh.run("exit") is None
+
+
+from pyos import sync
+
+
+def run_preset(name):
+    return sync.run_semaphores(*sync.parse_script(sync.PRESETS[name]))
+
+
+def test_semaphore_deadlock_and_fix():
+    assert run_preset("deadlock")[1:] == ("deadlock", ["P1", "P2"])
+    assert run_preset("ordered")[1] == "done"
+    trace, res, _ = run_preset("mutex")
+    assert res == "done" and all(t["sems"]["m"] in (0, 1) for t in trace)
+
+
+def test_banker_textbook():
+    av = [3, 3, 2]
+    mx = [[7, 5, 3], [3, 2, 2], [9, 0, 2], [2, 2, 2], [4, 3, 3]]
+    al = [[0, 1, 0], [2, 0, 0], [3, 0, 2], [2, 1, 1], [0, 0, 2]]
+    assert sync.safe_sequence(av, mx, al) == [1, 3, 4, 0, 2]
+    ok, _, av, al = sync.request_resources(1, [1, 0, 2], av, mx, al)
+    assert ok and av == [2, 3, 0]
+    assert not sync.request_resources(4, [3, 3, 0], av, mx, al)[0]      # 가용 부족
+    assert "불안전" in sync.request_resources(0, [0, 2, 0], av, mx, al)[1]
+
+
+def test_detect_deadlock():
+    # P0,P1이 서로 상대의 자원을 기다림, P2는 정상
+    assert sync.detect_deadlock([0], [[1], [1], [0]], [[1], [1], [0]]) == [0, 1]
+    assert sync.detect_deadlock([1], [[1], [1]], [[1], [0]]) == []
+
+
+def test_shell_sync():
+    sh = Shell()
+    assert "데드락 발생" in sh.run("sem deadlock")
+    assert "P1 → P3" in sh.run("banker")
+    assert "승인" in sh.run("banker req 1 1 0 2")
+    assert "불안전" in sh.run("banker req 0 0 2 0")

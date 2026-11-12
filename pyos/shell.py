@@ -1,7 +1,7 @@
 """PyOS 셸: 스케줄러·메모리·파일시스템을 묶는 커널 인터페이스."""
 import shlex
 from .filesystem import FileSystem, FSError
-from . import memory, scheduler
+from . import memory, scheduler, sync
 
 HELP = """명령어:
  [파일시스템] ls [경로] | cd <경로> | pwd | mkdir <경로> | cat <파일> | tree | rm [-r] <경로>
@@ -11,6 +11,9 @@ HELP = """명령어:
               sched <fcfs|sjf|priority|rr> [quantum]  스케줄링 시뮬레이션
               tick [n]                             시각을 n만큼 진행
  [메모리]     vmem <fifo|lru|opt> <프레임수> <페이지 참조열...>   예: vmem lru 3 7 0 1 2 0 3
+ [동기화]     sem <deadlock|ordered|mutex>        세마포어 실행 추적 (데드락 탐지 포함)
+              banker                               은행원 알고리즘 안전성 검사 (교과서 예제)
+              banker req <프로세스번호> <r0 r1 r2> 자원 요청 (승인되면 상태 반영)
  help | exit"""
 
 
@@ -18,6 +21,9 @@ class Shell:
     def __init__(self):
         self.fs = FileSystem()
         self.procs, self.next_pid, self.clock = [], 1, 0
+        self.bk = {"av": [3, 3, 2],
+                   "mx": [[7, 5, 3], [3, 2, 2], [9, 0, 2], [2, 2, 2], [4, 3, 3]],
+                   "al": [[0, 1, 0], [2, 0, 0], [3, 0, 2], [2, 1, 1], [0, 0, 2]]}
 
     def run(self, line):
         """한 줄을 실행하고 출력 문자열 반환. 종료 시 None."""
@@ -89,6 +95,20 @@ class Shell:
             return scheduler.render(gantt, res)
         if cmd == "vmem":
             return memory.render([int(x) for x in a[2:]], int(a[1]), a[0])
+        if cmd == "sem":
+            sems, procs = sync.parse_script(sync.PRESETS[a[0]])
+            trace, result, stuck = sync.run_semaphores(sems, procs)
+            rows = [f"{t['step']:>2}. {t['proc']:<4}{t['op']:<8}{t['note']}" for t in trace]
+            rows.append("=> 모든 프로세스 정상 종료" if result == "done" else f"=> 데드락 발생! 막힌 프로세스: {', '.join(stuck)}")
+            return "\n".join(rows)
+        if cmd == "banker":
+            b = self.bk
+            if a and a[0] == "req":
+                ok, why, b["av"], b["al"] = sync.request_resources(int(a[1]), [int(x) for x in a[2:]], b["av"], b["mx"], b["al"])
+                return f"P{a[1]} 요청 {a[2:]}: {why}"
+            seq = sync.safe_sequence(b["av"], b["mx"], b["al"])
+            head = f"가용={b['av']}"
+            return head + ("\n안전 상태. 안전 순서: " + " → ".join(f"P{i}" for i in seq) if seq else "\n불안전 상태!")
         return f"{cmd}: 명령을 찾을 수 없습니다 (help)"
 
 

@@ -11,3 +11,8 @@ AI 디지털 학습자료 정리
 python3 -m pyos      # 셸 실행 (help 로 명령어 확인)
 python3 -m pytest    # 테스트
 ```
+
+웹 시각화: `web/index.html` 을 브라우저로 열면 됩니다 (간트차트 애니메이션, 페이지 교체 표, FIFO/LRU/OPT 비교).
+
+```
+```

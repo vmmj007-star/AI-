@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PyOS 시각화</title>
+<style>
+:root{--bg:#f6f7f9;--fg:#1c2330;--card:#fff;--line:#d9dde4;--accent:#3b6cf6;--hit:#2f9e63;--fault:#e0483e}
+@media (prefers-color-scheme:dark){:root{--bg:#12161d;--fg:#e6e9ef;--card:#1b212b;--line:#2d3644;--accent:#6b93ff;--hit:#4cc38a;--fault:#ff6b61}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}
+main{max-width:960px;margin:0 auto;padding:16px}
+h1{font-size:1.4rem}h2{font-size:1.1rem;margin:0 0 10px}
+section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+label{display:inline-flex;flex-direction:column;font-size:.8rem;gap:2px;margin:0 8px 8px 0}
+input,select,button{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+button{background:var(--accent);color:#fff;border-color:var(--accent);cursor:pointer}
+button.sec{background:none;color:var(--fg);border-color:var(--line)}
+table{border-collapse:collapse;width:100%;font-size:.9rem}th,td{padding:4px 8px;border-bottom:1px solid var(--line);text-align:right}th:first-child,td:first-child{text-align:left}
+td input{width:60px}
+.gantt{display:flex;margin-top:12px;overflow-x:auto;padding-bottom:22px}
+.blk{position:relative;height:40px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;border-right:1px solid var(--card);flex:none;transition:opacity .2s}
+.blk span.t{position:absolute;left:0;bottom:-20px;font-size:.75rem;color:var(--fg);font-weight:400}
+.blk.idle{background:repeating-linear-gradient(45deg,var(--line),var(--line) 4px,transparent 4px,transparent 8px)!important;color:var(--fg)}
+.stats{margin-top:8px;font-size:.9rem}
+.mem{display:flex;gap:6px;overflow-x:auto;margin-top:12px}
+.col{flex:none;width:46px;text-align:center}
+.col .ref{font-weight:700;padding:4px 0;border-radius:6px 6px 0 0;color:#fff}
+.col .ref.f{background:var(--fault)}.col .ref.h{background:var(--hit)}
+.col .fr{border:1px solid var(--line);padding:4px 0;min-height:28px}
+.col .fr.v{outline:2px solid var(--fault);outline-offset:-2px}
+.col .fr.new{font-weight:700;color:var(--accent)}
+.hidden{opacity:0;width:0!important;padding:0;border:0;overflow:hidden}
+.legend{font-size:.8rem;margin-top:8px}
+</style>
+</head>
+<body>
+<main>
+<h1>PyOS 시각화</h1>
+
+<section>
+<h2>CPU 스케줄링</h2>
+<table id="ptable"><thead><tr><th>이름</th><th>도착</th><th>실행</th><th>우선순위</th><th></th></tr></thead><tbody></tbody></table>
+<p><button class="sec" id="addp">+ 프로세스</button></p>
+<label>알고리즘<select id="algo"><option value="fcfs">FCFS</option><option value="sjf">SJF</option><option value="priority">Priority</option><option value="rr" selected>Round Robin</option></select></label>
+<label>Quantum<input id="quantum" type="number" min="1" value="2" style="width:70px"></label>
+<label>속도(ms/단위)<input id="speed" type="number" min="0" value="150" style="width:90px"></label>
+<button id="runs">실행</button>
+<div class="gantt" id="gantt"></div>
+<div class="stats" id="sstats"></div>
+</section>
+
+<section>
+<h2>페이지 교체</h2>
+<label>참조열(공백 구분)<input id="refs" value="7 0 1 2 0 3 0 4 2 3 0 3 2 1 2 0 1 7 0 1" style="width:360px;max-width:100%"></label>
+<label>프레임 수<input id="frames" type="number" min="1" max="8" value="3" style="width:70px"></label>
+<label>알고리즘<select id="malgo"><option value="fifo">FIFO</option><option value="lru">LRU</option><option value="opt">OPT</option></select></label>
+<button id="runm">실행</button>
+<button class="sec" id="cmp">3개 비교</button>
+<div class="mem" id="mem"></div>
+<div class="legend"><b style="color:var(--hit)">■ 히트</b> <b style="color:var(--fault)">■ 폴트</b> (빨간 테두리 = 교체된 페이지)</div>
+<div class="stats" id="mstats"></div>
+</section>
+</main>
+<script>
+"use strict";
+const COLORS=["#3b6cf6","#e0883e","#2f9e63","#a34fd6","#d6486e","#2a9cb8","#8a7a1e","#6b7280"];
+const $=id=>document.getElementById(id);
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+/* ---------- 스케줄러 (pyos/scheduler.py 와 동일 로직) ---------- */
+function schedule(src,algo,quantum){
+  const procs=src.map(p=>({...p,remaining:p.burst,start:null,finish:null}));
+  const pending=[...procs].sort((a,b)=>a.arrival-b.arrival||a.pid-b.pid), ready=[], gantt=[];
+  let t=0,done=0;
+  const admit=()=>{while(pending.length&&pending[0].arrival<=t)ready.push(pending.shift());};
+  const pick=()=>{
+    if(algo==="sjf")return ready.reduce((a,b)=>(b.burst<a.burst||(b.burst===a.burst&&b.arrival<a.arrival))?b:a);
+    if(algo==="priority")return ready.reduce((a,b)=>(b.priority<a.priority||(b.priority===a.priority&&b.arrival<a.arrival))?b:a);
+    return ready[0];
+  };
+  const rec=(s,e,pid)=>{const g=gantt[gantt.length-1];(g&&g.pid===pid&&g.end===s)?g.end=e:gantt.push({start:s,end:e,pid});};
+  while(done<procs.length){
+    admit();
+    if(!ready.length){const n=pending[0].arrival;rec(t,n,-1);t=n;continue;}
+    const p=pick();ready.splice(ready.indexOf(p),1);
+    if(p.start===null)p.start=t;
+    const run=algo==="rr"?Math.min(quantum,p.remaining):p.remaining;
+    rec(t,t+run,p.pid);t+=run;p.remaining-=run;admit();
+    if(p.remaining)ready.push(p);else{p.finish=t;done++;}
+  }
+  procs.forEach(p=>{p.turnaround=p.finish-p.arrival;p.waiting=p.turnaround-p.burst;});
+  return {gantt,procs};
+}
+
+/* ---------- 페이지 교체 (pyos/memory.py 와 동일 로직) ---------- */
+function simulate(refs,frames,algo){
+  let mem=[],faults=0;const fifo=[],lru=[],log=[];
+  refs.forEach((page,i)=>{
+    const fault=!mem.includes(page);let victim=null;
+    if(fault){
+      faults++;
+      if(mem.length>=frames){
+        if(algo==="fifo")victim=fifo.shift();
+        else if(algo==="lru")victim=lru[0];
+        else{const fut=refs.slice(i+1);victim=mem.reduce((a,b)=>{
+          const ka=fut.includes(a)?fut.indexOf(a):fut.length+1,kb=fut.includes(b)?fut.indexOf(b):fut.length+1;return kb>ka?b:a;});}
+        mem=mem.filter(m=>m!==victim);const k=lru.indexOf(victim);if(k>=0)lru.splice(k,1);
+      }
+      mem.push(page);fifo.push(page);
+    }
+    const k=lru.indexOf(page);if(k>=0)lru.splice(k,1);lru.push(page);
+    log.push({page,mem:[...mem],fault,victim});
+  });
+  return {faults,log};
+}
+
+/* ---------- UI: 프로세스 테이블 ---------- */
+let pidSeq=0;
+function addRow(name,arrival,burst,priority){
+  const tr=document.createElement("tr");tr.dataset.pid=pidSeq++;
+  tr.innerHTML=`<td><input value="${name}" style="width:70px"></td>
+  <td><input type="number" min="0" value="${arrival}"></td><td><input type="number" min="1" value="${burst}"></td>
+  <td><input type="number" value="${priority}"></td><td><button class="sec">삭제</button></td>`;
+  tr.querySelector("button").onclick=()=>tr.remove();
+  $("ptable").tBodies[0].appendChild(tr);
+}
+[["A",0,5,2],["B",1,3,1],["C",2,8,3],["D",3,2,1]].forEach(r=>addRow(...r));
+$("addp").onclick=()=>addRow("P"+(pidSeq+1),0,3,0);
+const readProcs=()=>[...$("ptable").tBodies[0].rows].map((tr,i)=>{
+  const v=[...tr.querySelectorAll("input")].map(x=>x.value);
+  return {pid:i+1,name:v[0]||"P"+(i+1),arrival:Math.max(0,+v[1]||0),burst:Math.max(1,+v[2]||1),priority:+v[3]||0};});
+
+let runToken=0;
+$("runs").onclick=async()=>{
+  const token=++runToken,src=readProcs();
+  if(!src.length)return;
+  const {gantt,procs}=schedule(src,$("algo").value,Math.max(1,+$("quantum").value||1));
+  const unit=28,speed=Math.max(0,+$("speed").value||0),g=$("gantt");
+  g.innerHTML="";$("sstats").textContent="";
+  const color=pid=>COLORS[(pid-1)%COLORS.length];
+  for(const b of gantt){
+    const d=document.createElement("div");
+    const p=procs.find(x=>x.pid===b.pid);
+    d.className="blk hidden"+(b.pid<0?" idle":"");
+    d.style.minWidth="0";d.dataset.w=(b.end-b.start)*unit;
+    if(b.pid>0)d.style.background=color(b.pid);
+    d.innerHTML=`${b.pid<0?"idle":p.name}<span class="t">${b.start}</span>`;
+    g.appendChild(d);
+  }
+  const last=document.createElement("div");last.className="blk hidden";last.style.cssText="width:0;border:0";
+  last.innerHTML=`<span class="t">${gantt[gantt.length-1].end}</span>`;
+  const blks=[...g.children];
+  for(const d of blks){
+    if(token!==runToken)return;
+    d.classList.remove("hidden");d.style.width=d.dataset.w+"px";
+    await sleep(speed*(d.dataset.w/unit));
+  }
+  g.appendChild(Object.assign(document.createElement("div"),{className:"blk",style:"width:0;border:0",innerHTML:`<span class="t">${gantt[gantt.length-1].end}</span>`}));
+  const n=procs.length,avg=k=>(procs.reduce((s,p)=>s+p[k],0)/n).toFixed(2);
+  $("sstats").innerHTML="<table><thead><tr><th>이름</th><th>도착</th><th>실행</th><th>종료</th><th>반환</th><th>대기</th></tr></thead><tbody>"+
+    procs.map(p=>`<tr><td>${p.name}</td><td>${p.arrival}</td><td>${p.burst}</td><td>${p.finish}</td><td>${p.turnaround}</td><td>${p.waiting}</td></tr>`).join("")+
+    `</tbody></table><p>평균 대기시간 <b>${avg("waiting")}</b> · 평균 반환시간 <b>${avg("turnaround")}</b></p>`;
+};
+
+/* ---------- UI: 페이지 교체 ---------- */
+const readRefs=()=>$("refs").value.trim().split(/[\s,]+/).filter(Boolean).map(Number).filter(Number.isFinite);
+let memToken=0;
+$("runm").onclick=async()=>{
+  const token=++memToken,refs=readRefs(),frames=Math.min(8,Math.max(1,+$("frames").value||1));
+  if(!refs.length)return;
+  const {faults,log}=simulate(refs,frames,$("malgo").value),box=$("mem");
+  box.innerHTML="";$("mstats").textContent="";
+  for(const s of log){
+    if(token!==memToken)return;
+    const c=document.createElement("div");c.className="col";
+    let h=`<div class="ref ${s.fault?"f":"h"}">${s.page}</div>`;
+    for(let i=0;i<frames;i++){
+      const v=s.mem[i],cls=v===undefined?"":(s.fault&&v===s.page?" new":"");
+      h+=`<div class="fr${cls}">${v===undefined?"":v}</div>`;
+    }
+    if(s.victim!==null)h+=`<div class="fr v" title="교체됨">${s.victim}</div>`;
+    c.innerHTML=h;box.appendChild(c);
+    await sleep(Math.max(0,+$("speed").value||0)*2);
+  }
+  $("mstats").innerHTML=`페이지 폴트 <b>${faults}</b> / ${refs.length} (폴트율 ${(faults/refs.length*100).toFixed(0)}%)`;
+};
+$("cmp").onclick=()=>{
+  const refs=readRefs(),frames=Math.min(8,Math.max(1,+$("frames").value||1));
+  $("mem").innerHTML="";
+  $("mstats").innerHTML="<table><thead><tr><th>알고리즘</th><th>폴트</th><th>폴트율</th></tr></thead><tbody>"+
+    ["fifo","lru","opt"].map(a=>{const f=simulate(refs,frames,a).faults;return `<tr><td>${a.toUpperCase()}</td><td>${f}/${refs.length}</td><td>${(f/refs.length*100).toFixed(0)}%</td></tr>`;}).join("")+"</tbody></table>";
+};
+if(typeof module!=="undefined")module.exports={schedule,simulate};
+</script>
+</body>
+</html>

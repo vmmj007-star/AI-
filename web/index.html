@@ -37,6 +37,15 @@ textarea{font:13px/1.5 ui-monospace,monospace;width:100%;padding:8px;border:1px 
 .pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:.8rem;color:#fff}
 .ok{background:var(--hit)}.bad{background:var(--fault)}
 .msg{margin:8px 0;font-weight:600}
+.tip{background:color-mix(in srgb,var(--accent) 10%,var(--card));border-left:4px solid var(--accent);border-radius:6px;padding:10px 14px;margin:0 0 12px;font-size:.9rem}
+.tip b{color:var(--accent)}
+.dsvg{width:100%;height:auto;display:block;margin-top:8px}
+.dsvg text{fill:var(--fg);font-size:11px;paint-order:stroke;stroke:var(--card);stroke-width:3px;stroke-linejoin:round}.dsvg .ax{stroke:var(--line)}
+ol.steps{padding-left:22px;margin:8px 0;font-size:.9rem}ol.steps li{margin:2px 0}
+ol.steps .d{color:var(--accent);font-weight:600}ol.steps .j{color:var(--fault)}
+.bar{display:flex;align-items:center;gap:8px;margin:4px 0;font-size:.9rem}
+.bar .n{width:150px;flex:none}.bar .b{height:18px;border-radius:4px;background:var(--accent);min-width:2px}
+.bar.best .b{background:var(--hit)}
 .legend{font-size:.8rem;margin-top:8px}
 </style>
 </head>
@@ -99,6 +108,24 @@ textarea{font:13px/1.5 ui-monospace,monospace;width:100%;padding:8px;border:1px 
 <button id="breqgo" class="sec">요청 시도</button>
 <div class="msg" id="bmsg"></div>
 <div id="bseq" class="mem"></div>
+</section>
+
+<section>
+<h2>디스크 스케줄링 (SCAN, C-SCAN 등)</h2>
+<div class="tip"><b>먼저 알아두기 ·</b> 하드디스크는 LP판처럼 원판 위를 <b>헤드</b>가 안쪽↔바깥쪽(실린더 번호 0~199)으로 오가며 데이터를 읽어요.
+헤드를 움직이는 건 디스크에서 가장 느린 일이라, 밀려 있는 요청을 <b>어떤 순서로 처리하느냐</b>에 따라 이동 거리가 크게 달라져요.
+이 순서를 정하는 게 디스크 스케줄링이고, 목표는 <b>총 이동 거리 줄이기</b>입니다. 아래 그림에서 위→아래가 시간 흐름이고, 선이 길게 흔들릴수록 헤드가 많이 움직인 거예요.</div>
+<label>요청 큐(실린더 번호)<input id="dreqs" value="98 183 37 122 14 124 65 67" style="width:300px;max-width:100%"></label>
+<label>시작 위치<input id="dhead" type="number" min="0" value="53" style="width:80px"></label>
+<label>최대 실린더<input id="dmax" type="number" min="1" value="199" style="width:90px"></label>
+<label>초기 방향<select id="ddir"><option value="up">큰 번호 쪽</option><option value="down">작은 번호 쪽</option></select></label>
+<label>알고리즘<select id="dalgo"><option value="fcfs">FCFS</option><option value="sstf">SSTF</option><option value="scan" selected>SCAN</option><option value="cscan">C-SCAN</option><option value="look">LOOK</option></select></label>
+<button id="rund">실행</button> <button class="sec" id="cmpd">5개 비교</button>
+<div class="tip" id="dexplain" style="margin-top:12px"></div>
+<div id="dchart"></div>
+<ol class="steps" id="dsteps"></ol>
+<div class="msg" id="dtotal"></div>
+<div id="dcmp"></div>
 </section>
 </main>
 <script>
@@ -323,6 +350,70 @@ $("breqgo").onclick=()=>{
   $("bmsg").innerHTML=`<span class="pill ${r.ok?"ok":"bad"}">${r.ok?"승인":"거부"}</span> P${pid} 요청 [${nums($("breq").value)}]: ${r.why}`+(r.ok?" (할당·가용 상태 갱신됨)":"");
   const seq=safeSequence(...(()=>{const c=readBank();return [c.av,c.mx,c.al];})());showSeq(seq);
 };
+
+/* ---------- 디스크 스케줄링 (pyos/disk.py 와 동일 로직) ---------- */
+const DEXPLAIN={
+  fcfs:["FCFS (선착순)","먼저 도착한 요청부터 처리해요. 줄 서는 순서 그대로라 공평하고 단순하지만, 요청이 멀리 흩어져 있으면 헤드가 이리저리 왔다갔다 해서 이동이 많아요."],
+  sstf:["SSTF (최단 탐색 우선)","지금 헤드에서 '가장 가까운' 요청부터 처리해요. 택시가 가까운 손님부터 태우는 것과 같아요. 이동은 적지만, 멀리 있는 요청이 계속 뒤로 밀리는 '기아(starvation)' 문제가 생길 수 있어요."],
+  scan:["SCAN (엘리베이터)","엘리베이터처럼 한 방향으로 끝까지 가면서 지나는 길의 요청을 처리하고, 끝에 닿으면 방향을 바꿔 되돌아오며 처리해요. 요청이 없어도 끝까지 가는 게 특징이에요."],
+  cscan:["C-SCAN (순환 스캔)","SCAN과 비슷하지만 '한 방향으로만' 처리해요. 끝에 닿으면 반대편 처음으로 한 번에 돌아가고(돌아오는 길엔 처리 안 함), 다시 같은 방향으로 처리해요. 어느 위치든 기다리는 시간이 고르게 돼요."],
+  look:["LOOK","SCAN의 똑똑한 버전이에요. 끝까지 가지 않고 '마지막 요청'까지만 갔다가 방향을 바꿔요. 쓸데없는 이동이 줄어요."]};
+function upPoints(reqs,head,algo,mx){
+  if(algo==="fcfs")return reqs.map(r=>[r,"req"]);
+  if(algo==="sstf"){const left=[...reqs],pts=[];let cur=head;
+    while(left.length){let bi=0;left.forEach((x,i)=>{if(Math.abs(x-cur)<Math.abs(left[bi]-cur))bi=i;});
+      const r=left.splice(bi,1)[0];pts.push([r,"req"]);cur=r;}
+    return pts;}
+  const right=reqs.filter(r=>r>=head).sort((a,b)=>a-b),low=reqs.filter(r=>r<head).sort((a,b)=>a-b);
+  const pts=right.map(r=>[r,"req"]),back=[...low].reverse().map(r=>[r,"req"]);
+  if(algo==="look")return pts.concat(back);
+  if(!pts.length||pts[pts.length-1][0]!==mx)pts.push([mx,"edge"]);
+  if(algo==="scan")return pts.concat(back);
+  if(algo==="cscan"){if(low.length){pts.push([0,"jump"]);low.forEach(r=>pts.push([r,"req"]));}return pts;}
+  throw new Error("알 수 없는 알고리즘: "+algo);
+}
+function diskSim(reqs,head,algo,mx,dir){
+  if(!(head>=0&&head<=mx)||reqs.some(r=>!(r>=0&&r<=mx)))throw new Error(`실린더 번호는 0~${mx} 범위여야 합니다`);
+  const pts=dir==="down"?upPoints(reqs.map(r=>mx-r),mx-head,algo,mx).map(([p,k])=>[mx-p,k]):upPoints(reqs,head,algo,mx);
+  const notes={req:"요청 처리",edge:"끝까지 이동 (요청은 없지만 SCAN 계열은 끝까지 가요)",jump:"반대편 처음으로 점프 (돌아오는 길엔 처리 안 함)"};
+  let cur=head;const steps=pts.map(([pos,kind])=>{const st={from:cur,to:pos,dist:Math.abs(pos-cur),kind,note:notes[kind]};cur=pos;return st;});
+  return {steps,total:steps.reduce((a,s)=>a+s.dist,0)};
+}
+function drawDisk(head,steps,mx){
+  const W=640,L=24,R=24,top=34,rh=30,n=steps.length,H=top+rh*n+16,X=c=>L+c/mx*(W-L-R),Y=i=>top+rh*i;
+  let g=`<svg class="dsvg" viewBox="0 0 ${W} ${H}" role="img" aria-label="헤드 이동 경로">`;
+  [0,0.25,0.5,0.75,1].forEach(f=>{const c=Math.round(mx*f);g+=`<line class="ax" x1="${X(c)}" x2="${X(c)}" y1="${top-8}" y2="${H-10}" stroke-dasharray="2 4"/><text x="${X(c)}" y="${top-14}" text-anchor="middle">${c}</text>`;});
+  let px=X(head),py=Y(0);
+  steps.forEach((s,i)=>{const x=X(s.to),y=Y(i+1);
+    g+=`<line x1="${px}" y1="${py}" x2="${x}" y2="${y}" stroke="${s.kind==="jump"?"var(--fault)":"var(--accent)"}" stroke-width="2" ${s.kind==="jump"?'stroke-dasharray="5 4"':""}/>`;
+    px=x;py=y;});
+  g+=`<circle cx="${X(head)}" cy="${Y(0)}" r="6" fill="var(--hit)"/><text x="${X(head)+9}" y="${Y(0)+4}">시작 ${head}</text>`;
+  steps.forEach((s,i)=>{const x=X(s.to),y=Y(i+1),anc=x>W-70?"end":"start",dx=anc==="end"?-9:9;
+    g+=s.kind==="req"?`<circle cx="${x}" cy="${y}" r="5" fill="var(--accent)"/>`:`<circle cx="${x}" cy="${y}" r="5" fill="var(--card)" stroke="${s.kind==="jump"?"var(--fault)":"var(--accent)"}" stroke-width="2"/>`;
+    g+=`<text x="${x+dx}" y="${y+4}" text-anchor="${anc}">${s.to}${s.kind==="edge"?" (끝)":s.kind==="jump"?" (점프)":""}</text>`;});
+  return g+"</svg>";
+}
+function readDisk(){
+  return {reqs:$("dreqs").value.trim().split(/[\s,]+/).filter(Boolean).map(Number),head:+$("dhead").value,mx:Math.max(1,+$("dmax").value||199),dir:$("ddir").value};
+}
+function showDiskError(e){$("dtotal").innerHTML=`<span class="pill bad">오류</span> ${esc(e.message)}`;$("dchart").innerHTML=$("dsteps").innerHTML=$("dcmp").innerHTML="";}
+$("rund").onclick=()=>{
+  const {reqs,head,mx,dir}=readDisk(),algo=$("dalgo").value;
+  if(!reqs.length||reqs.some(isNaN)||isNaN(head)){showDiskError(new Error("요청 큐와 시작 위치에 숫자를 입력하세요"));return;}
+  let r;try{r=diskSim(reqs,head,algo,mx,dir);}catch(e){showDiskError(e);return;}
+  $("dexplain").innerHTML=`<b>${DEXPLAIN[algo][0]}</b> — ${DEXPLAIN[algo][1]}`;
+  $("dchart").innerHTML=drawDisk(head,r.steps,mx);
+  $("dsteps").innerHTML=r.steps.map(s=>`<li>${s.from} → ${s.to} <span class="d">(${s.dist}칸)</span> <span class="${s.kind==="jump"?"j":""}">${s.note}</span></li>`).join("");
+  $("dtotal").innerHTML=`총 이동 거리 = ${r.steps.map(s=>s.dist).join(" + ")} = <b>${r.total}</b>`;$("dcmp").innerHTML="";
+};
+$("cmpd").onclick=()=>{
+  const {reqs,head,mx,dir}=readDisk();let rows;
+  try{rows=Object.keys(DEXPLAIN).map(a=>[a,diskSim(reqs,head,a,mx,dir).total]);}catch(e){showDiskError(e);return;}
+  const max=Math.max(...rows.map(r=>r[1]))||1,best=Math.min(...rows.map(r=>r[1]));
+  $("dcmp").innerHTML="<h3 style='font-size:1rem;margin:16px 0 6px'>알고리즘 비교 (작을수록 빠름)</h3>"+rows.map(([a,t])=>`<div class="bar ${t===best?"best":""}"><span class="n">${DEXPLAIN[a][0]}</span><span class="b" style="width:${Math.max(1,t/max*55)}%"></span><b>${t}</b>${t===best?" ← 최소":""}</div>`).join("")+
+   `<div class="tip" style="margin-top:10px">숫자만 보면 SSTF/LOOK이 좋아 보여도, SSTF는 멀리 있는 요청이 굶을 수 있어요. SCAN/C-SCAN은 이동이 조금 더 많아도 <b>모든 요청이 반드시 처리</b>되는 공평함이 장점이고, C-SCAN은 기다리는 시간도 고르게 만들어 줘요.</div>`;
+};
+$("rund").click();
 if(typeof module!=="undefined")module.exports={schedule,simulate,parseScript,runSemaphores,safeSequence,requestResources};
 </script>
 </body>

@@ -96,3 +96,36 @@ def test_shell_sync():
     assert "P1 → P3" in sh.run("banker")
     assert "승인" in sh.run("banker req 1 1 0 2")
     assert "불안전" in sh.run("banker req 0 0 2 0")
+
+
+from pyos import disk
+
+Q = [98, 183, 37, 122, 14, 124, 65, 67]
+
+
+def test_disk_textbook_totals():
+    tot = {a: disk.simulate(Q, 53, a)[1] for a in disk.ALGOS}
+    assert tot == {"fcfs": 640, "sstf": 236, "scan": 331, "cscan": 382, "look": 299}
+
+
+def test_disk_paths():
+    steps, _ = disk.simulate(Q, 53, "scan")
+    assert [s["to"] for s in steps] == [65, 67, 98, 122, 124, 183, 199, 37, 14]
+    assert steps[6]["kind"] == "edge"
+    steps, _ = disk.simulate(Q, 53, "cscan")
+    assert [s["to"] for s in steps][-4:] == [199, 0, 14, 37] and steps[-3]["kind"] == "jump"
+
+
+def test_disk_direction_down_and_errors():
+    steps, total = disk.simulate(Q, 53, "scan", direction="down")
+    assert [s["to"] for s in steps] == [37, 14, 0, 65, 67, 98, 122, 124, 183] and total == 236
+    with pytest.raises(ValueError):
+        disk.simulate([300], 53, "scan")
+
+
+def test_shell_disk():
+    sh = Shell()
+    assert "디스크 스케줄링이란" in sh.run("disk")
+    assert "= 331" in sh.run("disk scan")
+    assert "← 최소" in sh.run("disk compare")
+    assert "= 640" in sh.run("disk fcfs 53 98 183 37 122 14 124 65 67")

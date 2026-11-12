@@ -1,7 +1,7 @@
 """PyOS 셸: 스케줄러·메모리·파일시스템을 묶는 커널 인터페이스."""
 import shlex
 from .filesystem import FileSystem, FSError
-from . import memory, scheduler, sync
+from . import disk, memory, scheduler, sync
 
 HELP = """명령어:
  [파일시스템] ls [경로] | cd <경로> | pwd | mkdir <경로> | cat <파일> | tree | rm [-r] <경로>
@@ -14,6 +14,9 @@ HELP = """명령어:
  [동기화]     sem <deadlock|ordered|mutex>        세마포어 실행 추적 (데드락 탐지 포함)
               banker                               은행원 알고리즘 안전성 검사 (교과서 예제)
               banker req <프로세스번호> <r0 r1 r2> 자원 요청 (승인되면 상태 반영)
+ [디스크]     disk                                  디스크 스케줄링 개념 설명
+              disk <fcfs|sstf|scan|cscan|look|compare> [시작위치 요청...]   예: disk scan 53 98 183 37 122 14
+              (시작위치·요청을 생략하면 교과서 예제: 53 | 98 183 37 122 14 124 65 67)
  help | exit"""
 
 
@@ -109,6 +112,11 @@ class Shell:
             seq = sync.safe_sequence(b["av"], b["mx"], b["al"])
             head = f"가용={b['av']}"
             return head + ("\n안전 상태. 안전 순서: " + " → ".join(f"P{i}" for i in seq) if seq else "\n불안전 상태!")
+        if cmd == "disk":
+            if not a:
+                return disk.INTRO + "\n\n알고리즘: " + ", ".join(disk.ALGOS) + ", compare  (disk compare 로 한눈에 비교)"
+            head, reqs = (int(a[1]), [int(x) for x in a[2:]]) if len(a) > 1 else (53, [98, 183, 37, 122, 14, 124, 65, 67])
+            return disk.compare(reqs, head) if a[0] == "compare" else disk.render(reqs, head, a[0])
         return f"{cmd}: 명령을 찾을 수 없습니다 (help)"
 
 
